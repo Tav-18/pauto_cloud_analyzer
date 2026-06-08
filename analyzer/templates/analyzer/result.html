@@ -1,0 +1,447 @@
+{% extends "analyzer/base.html" %}
+{% load static %}
+{% block title %}Analysis Results{% endblock %}
+
+{% block content %}
+  <section class="card result-card">
+    <div class="ready-head ready-head--result">
+      <div class="ready-copy">
+        <h1 class="ready-title">Analysis Summary</h1>
+        <p class="ready-sub">Review of the main metrics, total Incidents, and overall analysis status.</p>
+      </div>
+
+<div class="ready-actions">
+  <div class="ready-badges">
+    <span class="badge-mini status-badge status-badge--{{ status_variant }}">
+      Status: {{ status_label }}
+    </span>
+  </div>
+</div>
+    </div>
+
+    <div class="hr"></div>
+
+    {% if error %}
+      <div class="alert alert-error">{{ error }}</div>
+
+      <div class="submit-bar submit-bar--centered">
+        <a class="btn btn-secondary" href="{% url 'upload' %}">Back</a>
+      </div>
+    {% else %}
+  <article class="metric-card metric-card--core metric-card--{{ compliance_theme }}">
+    <div class="core-shell">
+      <div class="core-shell__grid"></div>
+      
+      <div class="core-head">
+        <div class="icon-wrap">
+  <svg viewBox="0 0 24 24">
+    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+  </svg>
+</div>
+        <div>
+          <p class="core-title">Coding Health Score: </p>
+        </div>
+
+        <span class="core-tier core-tier--{{ compliance_theme }}">
+          {{ compliance_tier }}
+        </span>
+
+        <strong class="metric-value core-value">{{ compliance_display_pct }}%</strong>
+      </div>
+
+      <div class="core-body">
+        <div
+          class="core-bar"
+          role="img"
+          aria-label="System integrity is {{ compliance_display_pct }} percent with {{ compliance_segments_filled }} of 20 cells charged"
+        >
+          {% for segment in compliance_segments %}
+            <span class="core-cell {% if segment.filled %}is-filled{% endif %}"></span>
+          {% endfor %}
+        </div>
+
+        <div class="core-meta">
+          <div class="core-helper">{{ compliance_helper|safe }}</div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+<div class="metrics-grid metrics-grid--balanced">
+  <article class="metric-card">
+    <span class="metric-label">Project ID</span>
+    <strong class="metric-value">{{ project_id }}</strong>
+  </article>
+
+  <article class="metric-card">
+    <span class="metric-label">Flows</span>
+    <strong class="metric-value">{{ total_flows }}</strong>
+  </article>
+
+  <article class="metric-card">
+    <span class="metric-label">Actions</span>
+    <strong class="metric-value">{{ total_actions }}</strong>
+  </article>
+
+  <article class="metric-card">
+    <span class="metric-label">Actions with Issues</span>
+    <strong class="metric-value">{{ flagged_actions_count }}</strong>
+  </article>
+
+  <article class="metric-card">
+    <span class="metric-label">Estimated Cost</span>
+    <strong class="metric-value">{{ estimated_token_cost_display }}</strong>
+  </article>
+
+  <article class="metric-card metric-card--findings-total">
+    <span class="metric-label">Total Incidents</span>
+    <strong class="metric-value">{{ total_findings }}</strong>
+  </article>
+</div>
+<p class="section-subtitle">Disclaimer: The results of this best practices analysis represent a single phase of the review process. Full compliance must be verified through manual rule checks.</p>
+
+<div class="hr"></div>
+
+      <div class="section-block">
+  <div class="section-head section-head--spaced">
+    <div class="section-head__content">
+      <h2 class="section-title">Total Incidents by Rule</h2>
+      <p class="section-subtitle">Rules that were triggered during this analysis.</p>
+    </div>
+
+    <button
+      type="button"
+      class="btn btn-secondary btn-info-trigger btn-info-trigger--text"
+      data-modal-open="rulesInfoModal"
+      aria-haspopup="dialog"
+      aria-controls="rulesInfoModal"
+      aria-label="More info about reviewed rules"
+      title="More info"
+    >
+      <span class="btn-info-trigger__icon" aria-hidden="true">i</span>
+      <span>More info</span>
+    </button>
+  </div>
+
+  <div class="summary-table-wrap">
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>Rule</th>
+          <th>Incidents</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule, cnt in rule_rows %}
+          <tr>
+            <td>{{ rule }}</td>
+            <td>
+              {% if rule == "Hardcode" %}
+                <span class="badge-mini badge-count badge-count--3">{{ cnt }}</span>
+              {% elif rule == "Parametrizable" or rule == "Manejo de errores (RunAfter)" or rule == "Retrasos (Delay y Wait)" %}
+                <span class="badge-mini badge-count badge-count--2">{{ cnt }}</span>
+              {% elif rule == "Nomenclatura de actividades" or rule == "Nomenclatura de variables" or rule == "Prefijos variables / parámetros" or rule == "Nomenclatura de flujos" or rule == "Condición IF" or rule == "Comentarios descriptivos" %}
+                <span class="badge-mini badge-count badge-count--1">{{ cnt }}</span>
+              {% else %}
+                <span class="badge-mini badge-count">{{ cnt }}</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="2" class="empty-state-cell">No rules were triggered in this analysis.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+      <div class="result-actions-bar">
+        <div class="result-actions-bar__copy">
+          <p class="submit-note">Download the Excel report or start a new analysis.</p>
+        </div>
+
+        <div class="result-actions-bar__buttons">
+          <a class="btn btn-primary" href="{% url 'download_excel' run_id %}">Download Incidents Report</a>
+          <a class="btn btn-secondary" href="{% url 'upload' %}">Back to Home</a>
+        </div>
+      </div>
+    {% endif %}
+  </section>
+
+  {% if not error %}
+    <div
+  class="info-modal"
+  id="rulesInfoModal"
+  hidden
+  aria-hidden="true"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="rulesInfoTitle"
+>
+  <div class="info-modal__backdrop" data-modal-close></div>
+
+<div class="info-modal__dialog">
+  <div class="info-modal__chrome">
+    <button
+      type="button"
+      class="info-modal__close"
+      aria-label="Close rules information"
+      data-modal-close
+    >
+      ×
+    </button>
+  </div>
+
+  <div class="info-modal__header">
+    <div>
+      <h2 class="section-title" id="rulesInfoTitle">Reviewed Rules</h2>
+      <p class="section-subtitle">
+        Rule definitions, severity levels, and evaluation purpose used by the analyzer.
+      </p>
+    </div>
+  </div>
+
+  <div class="info-modal__grid">
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Hardcode</h3>
+          <span class="badge-mini badge-level badge-level--3">Severity 3</span>
+        </div>
+        <p class="rule-info-card__text">
+          Detects credentials, tokens, secrets, API keys, bearer tokens, signatures, email addresses, or other sensitive information defined as fixed values inside the flow, variables, or action properties, instead of being resolved through a secure mechanism or external configuration. This practice increases the risk of information exposure and makes the solution harder to manage securely.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Parametrizable</h3>
+          <span class="badge-mini badge-level badge-level--2">Severity 2</span>
+        </div>
+        <p class="rule-info-card__text">
+          Detects non-sensitive fixed values defined directly in the flow, such as paths, endpoints, file names, configuration identifiers, or operational values, which should be managed through parameters, environment variables, connection references, or external configuration. Its purpose is to improve maintainability, reusability, and promotion across environments.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Manejo de errores (RunAfter)</h3>
+          <span class="badge-mini badge-level badge-level--2">Severity 2</span>
+        </div>
+        <p class="rule-info-card__text">
+          Detects relevant flow actions that do not include an explicit error-handling configuration through RunAfter, or an equivalent exception-handling structure. In Power Automate Cloud, RunAfter is recommended to define behavior for states such as failure, cancellation, or timeout, in order to keep execution controlled and traceable.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Retrasos</h3>
+          <span class="badge-mini badge-level badge-level--2">Severity 2</span>
+        </div>
+        <p class="rule-info-card__text">
+          Detects delay, wait, or interval actions configured with literal or fixed values inside the flow. The use of delays should be kept to a minimum because it can affect performance and make the automation fragile; when delays are necessary, their use should be documented and their value should be obtained from a parameter.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Nomenclatura de actividades</h3>
+          <span class="badge-mini badge-level badge-level--1">Severity 1</span>
+        </div>
+        <p class="rule-info-card__text">
+          Detects actions with default names, non-descriptive names, or names that do not comply with the writing rules defined for Power Automate Cloud, such as the use of accents, the letter ñ, special characters, or unnecessary numbering. The action name should be clear, descriptive, and consistent with the functionality it performs.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Nomenclatura de variables</h3>
+          <span class="badge-mini badge-level badge-level--1">Severity 1</span>
+        </div>
+        <p class="rule-info-card__text">
+          Validates that variable names follow the Cloud naming standard by using UpperCamelCase and a prefix that represents the data type, such as Bln, Int, Flt, Str, Obj, or Arr. Names should be unique, readable, and consistent with their purpose within the flow.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Prefijos variables / parámetros</h3>
+          <span class="badge-mini badge-level badge-level--1">Severity 1</span>
+        </div>
+        <p class="rule-info-card__text">
+          Validates that parameters exchanged between flows use the correct prefix according to their direction: in_ for input, out_ for output, and io_ for input/output, followed by the data type and a descriptive name. In addition, the first letter after the prefix must follow the convention defined in the manual to maintain consistency and understanding across related flows.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Nomenclatura de flujos</h3>
+          <span class="badge-mini badge-level badge-level--1">Severity 1</span>
+        </div>
+        <p class="rule-info-card__text">
+          Validates that flow names follow a clear, uniform, and consistent convention aligned with the action they perform, using UpperCamelCase, without spaces, accents, or special characters. The name should make the flow’s purpose easy to identify and preserve consistency within the solution.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Condición IF</h3>
+          <span class="badge-mini badge-level badge-level--1">Severity 1</span>
+        </div>
+        <p class="rule-info-card__text">
+          Detects If conditional structures whose main branch is empty, lacks useful actions, or is organized in a way that affects flow readability and understanding. This validation aims to highlight poorly structured conditions that make maintenance harder or create unclear logic inside the automation. The manual also limits condition nesting to preserve readability, although in Cloud this validation may require justification depending on the case.
+        </p>
+      </article>
+
+      <article class="rule-info-card">
+        <div class="rule-info-card__head">
+          <h3 class="rule-info-card__title">Comentarios</h3>
+          <span class="badge-mini badge-level badge-level--1">Severity 1</span>
+        </div>
+        <p class="rule-info-card__text">
+          Validates whether flow actions and scopes include enough notes or descriptions to make them easier to understand and maintain. In Power Automate Cloud, it is recommended to add descriptions to actions and scopes, aiming for at least 33% of actions to include visible documentation inside the flow.
+        </p>
+      </article>
+    </div>
+  </div>
+</div>
+  {% endif %}
+{% endblock %}
+{% block fullbleed %}
+  {% if not error %}
+<section class="fullbleed">
+  <div class="fullbleed-inner">
+    <div class="card card-tight">
+
+      <div class="section-head section-head--spaced">
+        <div>
+          <h2 class="section-title">Incident Details</h2>
+          <p class="section-subtitle">Severity, rule, target and reason for each detected incident.</p>
+        </div>
+        <!-- buscador global alineado a la derecha del título -->
+        <div class="findings-search-wrap">
+          <svg class="findings-search-icon" viewBox="0 0 20 20" fill="none">
+            <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <input
+            id="findingsSearch"
+            class="findings-search"
+            type="text"
+            placeholder="Search all columns…"
+            autocomplete="off"
+            aria-label="Search incidents"
+          />
+          <button class="findings-search-clear" id="findingsSearchClear" hidden aria-label="Clear search">×</button>
+        </div>
+      </div>
+
+      <!-- chips de filtros activos -->
+      <div class="findings-active-filters" id="findingsActiveFilters" hidden></div>
+
+
+      <div class="findings-scroll">
+        <table class="findings-table" id="findingDetailsTable">
+          <thead>
+            <tr>
+              <!-- cada th con data-col para identificar la columna filtrable -->
+              <th>
+                <div class="th-inner">
+                  Severity
+                  <button class="col-filter-btn" data-col="severity" aria-label="Filter by severity">
+                    <svg viewBox="0 0 16 16" fill="none" width="13" height="13">
+                      <path d="M2 4h12M4 8h8M6 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                  <div class="col-filter-dropdown" id="colFilter-severity" hidden>
+                    <div class="col-filter-dropdown__inner">
+                      <p class="col-filter-dropdown__label">Filter by severity</p>
+                      <div class="col-filter-options" id="colOpts-severity"></div>
+                      <button class="col-filter-clear" data-col="severity">Clear</button>
+                    </div>
+                  </div>
+                </div>
+              </th>
+              <th>
+                <div class="th-inner">
+                  Rule
+                  <button class="col-filter-btn" data-col="rule" aria-label="Filter by rule">
+                    <svg viewBox="0 0 16 16" fill="none" width="13" height="13">
+                      <path d="M2 4h12M4 8h8M6 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                  <div class="col-filter-dropdown" id="colFilter-rule" hidden>
+                    <div class="col-filter-dropdown__inner">
+                      <p class="col-filter-dropdown__label">Filter by rule</p>
+                      <div class="col-filter-options" id="colOpts-rule"></div>
+                      <button class="col-filter-clear" data-col="rule">Clear</button>
+                    </div>
+                  </div>
+                </div>
+              </th>
+              <th>Target (Flow / Activity)</th>
+              <th>Error Detail</th>
+              <th>Suggestion</th>
+              <th>Repeats</th>
+
+            </tr>
+          </thead>
+          <tbody>
+  {% for f in findings %}
+    <tr>
+      <td>
+        <span class="severity-pill severity-pill--{{ f.severity_level }}">
+          Level {{ f.severity_level }}
+        </span>
+      </td>
+
+      <td>
+        <div class="finding-rule">{{ f.rule_name }}</div>
+      </td>
+
+      <td class="cell-wrap">{{ f.target_pretty }}</td>
+
+      <td>
+        <div class="finding-reason">{{ f.reason }}</div>
+      </td>
+
+      <td class="cell-wrap">
+        <div class="finding-reason">{{ f.suggestion|safe|default:"-" }}</div>
+      </td>
+
+      <td class="cell-wrap">{{ f.repeat_count|default:1 }}</td>
+    </tr>
+  {% empty %}
+    <tr>
+      <td colspan="6" class="empty-state-cell">No findings were detected with the current rule set.</td>
+    </tr>
+  {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+
+      <div class="table-toolbar" id="findingsToolbar">
+        <div class="table-toolbar__left">
+          <label class="table-toolbar__label" for="findingsPageSize">Show</label>
+          <select id="findingsPageSize" class="table-toolbar__select">
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="30">30</option>
+          </select>
+          <span class="table-toolbar__label">entries</span>
+        </div>
+        <div class="table-pagination" id="findingsPagination" hidden></div>
+        <div class="table-toolbar__right">
+          <span class="table-toolbar__meta" id="findingsTableMeta">Showing 0 to 0 of 0 Incidents</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+    <script src="{% static 'analyzer/upload_analyzer.js' %}"></script>
+  {% endif %}
+{% endblock %}

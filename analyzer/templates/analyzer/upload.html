@@ -1,0 +1,272 @@
+{% extends "analyzer/base.html" %}
+{% load static %}
+{% block title %}Upload Solution ZIP{% endblock %}
+
+{% block content %}
+<section class="card card-upload-main card-upload-clean">
+  <div class="upload-header-minimal">
+    <div>
+      <h2 class="upload-title">Analyze Solution ZIP</h2>
+      <p class="upload-sub upload-sub--compact">
+        Upload the ZIP file and enter the Project ID.
+      </p>
+    </div>
+  </div>
+
+<form
+  method="post"
+  enctype="multipart/form-data"
+  class="form form-clean"
+  id="uploadForm"
+  novalidate
+  data-upload-url="{% url 'upload' %}"
+  action="{% if pick_id %}{% url 'select_jsons' pick_id=pick_id %}{% else %}{% url 'upload' %}{% endif %}"
+>
+    {% csrf_token %}
+
+    <div class="stack-fields stack-fields--clean">
+
+      <fieldset class="form-section">
+        <legend class="section-legend">ZIP File</legend>
+
+        <div class="field field--full">
+
+          <div class="uploader uploader--clean" id="uploader" aria-describedby="fileError">
+            <input
+              id="id_solution_zip"
+              class="native-file"
+              type="file"
+              name="solution_zip"
+              accept=".zip,application/zip"
+              {% if not pick_id %}required{% endif %}
+            />
+
+            <button type="button" class="file-ui file-ui--clean" id="fileUi" aria-label="Select solution.zip">
+              <span class="file-ui__btn">Select file</span>
+              <span class="file-ui__text" id="fileHint">
+                {% if pick_id %}
+                  Your file is ready to analyze
+                {% else %}
+                  Drag your .zip file here or click to browse
+                {% endif %}
+              </span>
+            </button>
+
+            <button type="button" class="upload-orb" id="orbBtn" aria-label="Choose file">
+              <span class="cloud"></span>
+              <span class="arrow"></span>
+            </button>
+          </div>
+
+          <div
+  class="file-pill file-pill--with-x"
+  id="filePill"
+  {% if not uploaded_file_name %}hidden{% endif %}
+  {% if uploaded_file_name %}data-persistent="true"{% endif %}
+>
+  <div class="meta">
+    <div class="name" id="fileName">{{ uploaded_file_name|default:"—" }}</div>
+    <div class="size" id="fileSize">
+      {% if uploaded_file_size %}
+        {{ uploaded_file_size|filesizeformat }}
+      {% else %}
+        —
+      {% endif %}
+    </div>
+  </div>
+
+  <span class="badge-mini badge-mini--success">Ready</span>
+<button
+  type="button"
+  class="pill-x"
+  id="clearBtn"
+  aria-label="Remove file and start over"
+  title="Remove file and start over"
+>×</button>
+</div>
+
+          {% if show_json_picker %}
+            <div class="flow-summary-card" id="flowSummaryCard">
+              <div class="flow-summary-card__row">
+                <div class="flow-summary-card__left">
+                  <div class="flow-summary-card__title">Flow Analysis</div>
+
+                  <div class="flow-summary-card__badges">
+                    <span class="badge-mini">
+                      Flows:
+                      <strong>{{ json_count }}</strong>
+                    </span>
+
+                    <span class="badge-mini">
+                      Selected:
+                      <strong id="selectedFlowsSummary">{{ selected_json_count }}</strong>
+                    </span>
+
+                    <span class="badge-mini">Power Automate Cloud</span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  class="flow-summary-card__action"
+                  data-modal-open="jsonPickerModal"
+                  aria-haspopup="dialog"
+                  aria-controls="jsonPickerModal"
+                >
+                  <span class="flow-summary-card__action-icon" aria-hidden="true">☑</span>
+                  Select flows
+                </button>
+              </div>
+            </div>
+
+            <div id="selectedJsonsContainer" hidden>
+              {% for selected_id in selected_json_ids %}
+                <input type="hidden" name="selected_jsons" value="{{ selected_id }}">
+              {% endfor %}
+            </div>
+          {% endif %}
+
+          <p class="field-error" id="fileError" hidden>Please select a valid .zip file.</p>
+        </div>
+      </fieldset>
+
+      <fieldset class="form-section">
+        <legend class="section-legend">Project ID</legend>
+
+        <div class="field field--full">
+          <div class="input-wrap input-with-icon input-with-icon--clean">
+            <span class="input-icon">#</span>
+            <input
+  type="text"
+  id="id_project_id"
+  name="project_id"
+  placeholder="e.g. NVB.008 / TYM / Project-123"
+  maxlength="80"
+  autocomplete="off"
+  required
+  value="{{ project_id|default:'' }}"
+>
+          </div>
+
+          <p class="field-error" id="projectError" hidden>Please enter a Project ID before continuing.</p>
+        </div>
+      </fieldset>
+
+    </div>
+
+<div class="submit-bar submit-bar--clean">
+  <button class="btn btn-primary btn-analyze" type="submit" id="analyzeBtn">
+    <span>Analyze Selected Flows</span>
+  </button>
+</div>
+  </form>
+</section>
+
+{% if show_json_picker %}
+  <div
+    class="info-modal picker-modal"
+    id="jsonPickerModal"
+    hidden
+    aria-hidden="true"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="jsonPickerTitle"
+  >
+    <div class="info-modal__backdrop" data-modal-close></div>
+
+    <div class="info-modal__dialog info-modal__dialog--wide">
+      <div class="info-modal__header">
+        <div>
+          <p class="eyebrow">Flow Selection</p>
+          <h2 class="section-title" id="jsonPickerTitle">Select Flows</h2>
+          <p class="section-subtitle">
+            Choose which flows should be included in the analysis.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          class="info-modal__close"
+          aria-label="Close flow selection"
+          data-modal-close
+        >
+          ×
+        </button>
+      </div>
+
+      {% if picker_error %}
+        <div class="alert alert-error" id="pickerError">{{ picker_error }}</div>
+      {% else %}
+        <div class="alert alert-error" id="pickerError" hidden></div>
+      {% endif %}
+
+      <div class="selection-toolbar selection-toolbar--modal">
+        <div class="action-group">
+          <button type="button" class="btn btn-secondary" id="selectAllBtn">Select all</button>
+          <button type="button" class="btn btn-secondary" id="clearAllBtn">Clear all</button>
+        </div>
+      </div>
+
+      <div class="summary-table-wrap">
+        <table class="summary-table json-picker-table">
+          <thead>
+            <tr>
+              <th class="checkbox-col">Select</th>
+              <th>Flow</th>
+              <th>Relative Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in json_candidates %}
+              <tr>
+                <td class="checkbox-col">
+                  <input
+                    type="checkbox"
+                    value="{{ item.id }}"
+                    class="json-checkbox"
+                    {% if item.id in selected_json_ids %}checked{% endif %}
+                  >
+                </td>
+                <td>
+                  <div class="json-flow-name">{{ item.display_name }}</div>
+                </td>
+                <td>
+                  <div class="json-rel-path">{{ item.rel_path }}</div>
+                </td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="3" class="empty-state-cell">
+                  No flow files were found in the uploaded ZIP.
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="info-modal__footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+        <button type="button" class="btn btn-primary" id="applyFlowSelectionBtn">Apply Selection</button>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+<div class="beecker-overlay" id="overlay" aria-hidden="true">
+  <div class="beecker-overlay-card">
+    <div class="beecker-loader-row">
+      <div class="beecker-spinner"></div>
+      <div>
+        <p class="beecker-loader-title">Analyzing Solution ZIP</p>
+        <p class="beecker-loader-sub" id="overlayMessage">Applying rules and preparing the Excel report…</p>
+        <div class="beecker-progress-bar">
+          <div class="beecker-progress" id="progress"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="{% static 'analyzer/upload_analyzer.js' %}"></script>
+{% endblock %}

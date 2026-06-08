@@ -1,0 +1,38 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{% block title %}Power Automate Best Practices Analyzer{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="{% static 'analyzer/favicon.ico' %}" type="image/x-icon" />
+  <link rel="stylesheet" href="{% static 'analyzer/styles.css' %}?v=3">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <header class="beecker-header">
+    <div class="bh-left">
+      <img src="{% static 'analyzer/b-logo.png' %}" alt="Company logo">
+    </div>
+
+    <div class="bh-center">
+      <h1 class="bh-title">Code Review Analyzer</h1>
+      <div class="upload-sub">Power Automate Cloud</div>
+    </div>
+
+    <div class="bh-right">
+      <img src="{% static 'analyzer/logo.png' %}" alt="Company logo">
+    </div>
+  </header>
+
+<main class="container">
+  {% block content %}{% endblock %}
+</main>
+
+{% block fullbleed %}{% endblock %}
+
+</body>
+</html>
