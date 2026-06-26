@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+import re
 
 from anthropic import Anthropic
 from django.conf import settings
@@ -29,7 +29,19 @@ CODE_EXECUTION_TOOL: dict[str, str] = {
 }
 
 DEFAULT_MAX_TOKENS = 4096
-DEFAULT_MAX_CONTINUATIONS = 3
+DEFAULT_MAX_CONTINUATIONS = 1
+DEFAULT_MAX_ESTIMATED_COST_USD = Decimal("1.50")
+DEFAULT_TIMEOUT_SECONDS = 240.0
+
+DEFAULT_EXECUTION_LOG_MODE = "errors"
+
+VALID_EXECUTION_LOG_MODES = {
+    "off",
+    "errors",
+    "all",
+}
+
+
 
 MODEL_PRICING_USD_PER_MTOK: dict[str, dict[str, Decimal]] = {
     "claude-haiku-4-5-20251001": {
@@ -78,6 +90,69 @@ def get_int_env(name: str, default: int) -> int:
         ) from exc
 
 
+
+def get_float_env(name: str, default: float) -> float:
+    raw_value = (os.getenv(name) or "").strip()
+
+    if not raw_value:
+        return default
+
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ClaudeReviewError(
+            f"La variable {name} debe contener un número válido. "
+            f"Valor recibido: {raw_value}"
+        ) from exc
+
+    if value <= 0:
+        raise ClaudeReviewError(f"La variable {name} debe ser mayor que 0.")
+
+    return value
+
+
+def get_decimal_env(name: str, default: Decimal) -> Decimal:
+    raw_value = (os.getenv(name) or "").strip()
+
+    if not raw_value:
+        return default
+
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation as exc:
+        raise ClaudeReviewError(
+            f"La variable {name} debe contener un decimal válido. "
+            f"Valor recibido: {raw_value}"
+        ) from exc
+
+    if value <= 0:
+        raise ClaudeReviewError(f"La variable {name} debe ser mayor que 0.")
+
+    return value
+
+
+
+def get_execution_log_mode() -> str:
+    mode = (
+        os.getenv("ANTHROPIC_EXECUTION_LOG_MODE")
+        or DEFAULT_EXECUTION_LOG_MODE
+    ).strip().lower()
+
+    if mode not in VALID_EXECUTION_LOG_MODES:
+        allowed_values = ", ".join(
+            sorted(VALID_EXECUTION_LOG_MODES)
+        )
+
+        raise ClaudeReviewError(
+            "La variable ANTHROPIC_EXECUTION_LOG_MODE debe ser "
+            f"uno de estos valores: {allowed_values}. "
+            f"Valor recibido: {mode}"
+        )
+
+    return mode
+
+
+
 def usage_to_dict(response: Any) -> dict[str, Any]:
     usage = getattr(response, "usage", None)
 
@@ -105,7 +180,9 @@ def merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
     ]
 
     for field in numeric_fields:
-        total[field] = int(total.get(field, 0) or 0) + int(usage.get(field, 0) or 0)
+        total[field] = int(total.get(field, 0) or 0) + int(
+            usage.get(field, 0) or 0
+        )
 
     server_tool_use = usage.get("server_tool_use") or {}
     total_server_tool_use = total.setdefault("server_tool_use", {})
@@ -130,17 +207,21 @@ def record_call_usage(
     merge_usage(total_usage, usage)
 
     server_tool_use = usage.get("server_tool_use") or {}
+    call_index = len(usage_calls) + 1
 
     usage_calls.append(
         {
-            "call_index": len(usage_calls) + 1,
+            "call_index": call_index,
+            "call_type": "initial" if call_index == 1 else "continuation",
             "stop_reason": getattr(response, "stop_reason", None),
             "input_tokens": int(usage.get("input_tokens", 0) or 0),
             "output_tokens": int(usage.get("output_tokens", 0) or 0),
             "cache_creation_input_tokens": int(
                 usage.get("cache_creation_input_tokens", 0) or 0
             ),
-            "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+            "cache_read_input_tokens": int(
+                usage.get("cache_read_input_tokens", 0) or 0
+            ),
             "code_execution_requests": int(
                 server_tool_use.get("code_execution_requests", 0) or 0
             ),
@@ -162,7 +243,9 @@ def estimate_token_cost_usd(
     cache_creation_tokens = Decimal(
         int(usage.get("cache_creation_input_tokens", 0) or 0)
     )
-    cache_read_tokens = Decimal(int(usage.get("cache_read_input_tokens", 0) or 0))
+    cache_read_tokens = Decimal(
+        int(usage.get("cache_read_input_tokens", 0) or 0)
+    )
 
     one_million = Decimal("1000000")
 
@@ -256,7 +339,7 @@ Project ID: {project_id or ""}
 Selected files:
 {file_list}
 
-Return only valid JSON using the pauto_cloud_rows_v2 schema.
+Return only valid JSON using the pauto_cloud_rows_v3 schema.
 Do not generate .xlsx, .csv, Markdown, prose, or explanations outside the JSON.
 Do not include raw workflow JSON or full sensitive values in the response.
 """.strip()
@@ -272,7 +355,9 @@ def build_initial_messages(
             "type": "text",
             "text": build_prompt(
                 project_id=project_id,
-                selected_files=[item["filename"] for item in uploaded_json_files],
+                selected_files=[
+                    item["filename"] for item in uploaded_json_files
+                ],
             ),
         }
     ]
@@ -343,33 +428,111 @@ def extract_text_from_response(response: Any) -> str:
 
 
 def parse_json_from_text(text: str) -> dict[str, Any]:
+    """
+    Extrae un objeto JSON válido de la respuesta de Claude.
+
+    Acepta:
+    - JSON puro.
+    - JSON dentro de bloques ```json.
+    - Texto antes o después del JSON.
+    - Varios bloques de texto, siempre que alguno contenga un objeto válido.
+
+    No intenta reparar silenciosamente un JSON verdaderamente mal formado,
+    porque podría alterar los hallazgos del análisis.
+    """
     cleaned = (text or "").strip()
 
     if not cleaned:
-        raise ClaudeReviewError("Claude no devolvió texto con JSON.")
-
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
-
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-
-    if start == -1 or end == -1 or end <= start:
-        raise ClaudeReviewError("No se pudo localizar un objeto JSON en la respuesta de Claude.")
-
-    try:
-        return json.loads(cleaned[start : end + 1])
-    except json.JSONDecodeError as exc:
         raise ClaudeReviewError(
-            "La respuesta de Claude no es JSON válido. Puede estar truncada por max_tokens."
-        ) from exc
+            "Claude no devolvió contenido de texto con JSON."
+        )
+
+    candidates: list[str] = []
+
+    # Primero buscar bloques Markdown explícitos.
+    fenced_blocks = re.findall(
+        r"```(?:json)?\s*(.*?)```",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    candidates.extend(
+        block.strip()
+        for block in fenced_blocks
+        if block.strip()
+    )
+
+    # Después probar la respuesta completa.
+    candidates.append(cleaned)
+
+    decoder = json.JSONDecoder()
+    last_error: json.JSONDecodeError | None = None
+
+    for candidate in candidates:
+        candidate = candidate.strip()
+
+        if not candidate:
+            continue
+
+        # Primer intento: todo el contenido es un JSON.
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+        else:
+            if isinstance(payload, dict):
+                return payload
+
+        # Segundo intento: localizar un objeto JSON dentro de texto adicional.
+        for match in re.finditer(r"\{", candidate):
+            start_position = match.start()
+            fragment = candidate[start_position:]
+
+            try:
+                payload, _ = decoder.raw_decode(fragment)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                continue
+
+            if isinstance(payload, dict):
+                return payload
+
+    if last_error is not None:
+        raise ClaudeReviewError(
+            "Claude terminó la respuesta, pero devolvió un JSON mal formado. "
+            f"Detalle: {last_error.msg}. "
+            f"Línea {last_error.lineno}, columna {last_error.colno}. "
+            "No se realizó otro intento para evitar un cobro adicional."
+        ) from last_error
+
+    raise ClaudeReviewError(
+        "Claude terminó la respuesta, pero no se encontró ningún "
+        "objeto JSON válido. No se realizó otro intento para evitar "
+        "un cobro adicional."
+    )
+
+def extract_complete_review_json(response: Any) -> dict[str, Any] | None:
+    raw_text = extract_text_from_response(response)
+
+    if not raw_text:
+        return None
+
+    try:
+        payload = parse_json_from_text(raw_text)
+    except ClaudeReviewError:
+        return None
+
+    if payload.get("schema_version") != "pauto_cloud_rows_v3":
+        return None
+
+    if not isinstance(payload.get("detail_rows"), list):
+        return None
+
+    errors = payload.get("errors")
+    if errors is not None and not isinstance(errors, list):
+        return None
+
+    return payload
 
 
 def write_execution_log(
@@ -383,10 +546,57 @@ def write_execution_log(
     status: str,
     error: str | None = None,
 ) -> None:
-    outputs_dir = Path(getattr(settings, "OUTPUTS_DIR", Path("outputs")))
-    outputs_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Guarda información de las ejecuciones de Claude según el modo configurado.
+
+    Modos disponibles mediante ANTHROPIC_EXECUTION_LOG_MODE:
+
+    - all: guarda ejecuciones exitosas y fallidas.
+    - errors: guarda únicamente ejecuciones fallidas.
+    - off: no guarda ningún registro.
+    """
+    log_mode = (
+        os.getenv("ANTHROPIC_EXECUTION_LOG_MODE")
+        or "errors"
+    ).strip().lower()
+
+    valid_modes = {
+        "all",
+        "errors",
+        "off",
+    }
+
+    if log_mode not in valid_modes:
+        allowed_values = ", ".join(sorted(valid_modes))
+
+        raise ClaudeReviewError(
+            "La variable ANTHROPIC_EXECUTION_LOG_MODE debe contener "
+            f"uno de estos valores: {allowed_values}. "
+            f"Valor recibido: {log_mode}"
+        )
+
+    # No guardar ningún registro.
+    if log_mode == "off":
+        return
+
+    # Guardar únicamente errores.
+    if log_mode == "errors" and status == "success":
+        return
+
+    outputs_dir = Path(
+        getattr(
+            settings,
+            "OUTPUTS_DIR",
+            Path("outputs"),
+        )
+    )
+    outputs_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     log_path = outputs_dir / "execution_log.jsonl"
+
     server_tool_use = usage.get("server_tool_use") or {}
 
     log_record = {
@@ -395,15 +605,33 @@ def write_execution_log(
         "model": model,
         "project_id": project_id,
         "selected_files": selected_files,
-        "input_tokens": int(usage.get("input_tokens", 0) or 0),
-        "output_tokens": int(usage.get("output_tokens", 0) or 0),
-        "cache_creation_input_tokens": int(
-            usage.get("cache_creation_input_tokens", 0) or 0
+        "input_tokens": int(
+            usage.get("input_tokens", 0) or 0
         ),
-        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+        "output_tokens": int(
+            usage.get("output_tokens", 0) or 0
+        ),
+        "cache_creation_input_tokens": int(
+            usage.get(
+                "cache_creation_input_tokens",
+                0,
+            )
+            or 0
+        ),
+        "cache_read_input_tokens": int(
+            usage.get(
+                "cache_read_input_tokens",
+                0,
+            )
+            or 0
+        ),
         "total_tokens": total_tokens_used(usage),
         "code_execution_requests": int(
-            server_tool_use.get("code_execution_requests", 0) or 0
+            server_tool_use.get(
+                "code_execution_requests",
+                0,
+            )
+            or 0
         ),
         "estimated_token_cost_usd": (
             float(estimated_token_cost_usd)
@@ -413,14 +641,28 @@ def write_execution_log(
         "calls": usage_calls,
         "error": error,
         "note": (
-            "Costo estimado solo por tokens. Code execution puede tener costo aparte "
-            "según tiempo de ejecución, free tier y configuración de la cuenta."
+            "Costo estimado solamente por tokens. Code Execution puede "
+            "tener un costo adicional según el tiempo de ejecución, "
+            "el free tier y la configuración de la cuenta."
         ),
     }
 
-    with log_path.open("a", encoding="utf-8") as file_obj:
-        file_obj.write(json.dumps(log_record, ensure_ascii=False) + "\n")
-
+    try:
+        with log_path.open(
+            "a",
+            encoding="utf-8",
+        ) as file_obj:
+            file_obj.write(
+                json.dumps(
+                    log_record,
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except OSError:
+        # Un error al escribir el log no debe provocar que falle
+        # todo el análisis de Claude.
+        return
 
 def run_cloud_review(
     *,
@@ -436,13 +678,45 @@ def run_cloud_review(
     model = get_required_env("ANTHROPIC_MODEL")
     skill_id = get_required_env("ANTHROPIC_SKILL_ID")
 
-    max_tokens = get_int_env("ANTHROPIC_MAX_TOKENS", DEFAULT_MAX_TOKENS)
+    max_tokens = get_int_env(
+        "ANTHROPIC_MAX_TOKENS",
+        DEFAULT_MAX_TOKENS,
+    )
     max_continuations = get_int_env(
         "ANTHROPIC_MAX_CONTINUATIONS",
         DEFAULT_MAX_CONTINUATIONS,
     )
+    max_estimated_cost_usd = get_decimal_env(
+        "ANTHROPIC_MAX_ESTIMATED_COST_USD",
+        DEFAULT_MAX_ESTIMATED_COST_USD,
+    )
 
-    client = Anthropic(api_key=api_key)
+    timeout_seconds = get_float_env(
+        "ANTHROPIC_TIMEOUT_SECONDS",
+        DEFAULT_TIMEOUT_SECONDS,
+    )
+
+    if max_tokens <= 0:
+        raise ClaudeReviewError(
+            "ANTHROPIC_MAX_TOKENS debe ser mayor que 0."
+        )
+
+    if max_continuations < 0:
+        raise ClaudeReviewError(
+            "ANTHROPIC_MAX_CONTINUATIONS no puede ser menor que 0."
+        )
+
+    if max_continuations > 1:
+        raise ClaudeReviewError(
+            "Por control de costos, ANTHROPIC_MAX_CONTINUATIONS no puede "
+            "ser mayor que 1."
+        )
+
+    client = Anthropic(
+        api_key=api_key,
+        timeout=timeout_seconds,
+        max_retries=0,
+    )
 
     uploaded_json_files: list[dict[str, str]] = []
 
@@ -457,6 +731,9 @@ def run_cloud_review(
             }
         )
 
+    selected_files = [
+        item["filename"] for item in uploaded_json_files
+    ]
     total_usage: dict[str, Any] = {}
     usage_calls: list[dict[str, Any]] = []
 
@@ -480,20 +757,62 @@ def run_cloud_review(
     )
 
     continuations = 0
+    completed_review_json: dict[str, Any] | None = None
 
-    while True:
-        stop_reason = getattr(response, "stop_reason", None)
+    while getattr(response, "stop_reason", None) == "pause_turn":
+        completed_review_json = extract_complete_review_json(response)
 
-        if stop_reason != "pause_turn":
+        if completed_review_json is not None:
             break
 
         if continuations >= max_continuations:
-            raise ClaudeReviewError(
-                "La ejecución quedó en pause_turn demasiadas veces. "
-                "Aumenta ANTHROPIC_MAX_CONTINUATIONS solo si es necesario."
+            current_cost = estimate_token_cost_usd(model, total_usage)
+
+            write_execution_log(
+                model=model,
+                project_id=project_id,
+                selected_files=selected_files,
+                usage=total_usage,
+                usage_calls=usage_calls,
+                estimated_token_cost_usd=current_cost,
+                status="continuation_limit_reached",
+                error=(
+                    "Claude solicitó otra continuación después de alcanzar "
+                    f"el límite de {max_continuations}."
+                ),
             )
 
-        continuations += 1
+            raise ClaudeReviewError(
+                "Claude no terminó dentro del límite permitido de "
+                f"{max_continuations} continuación(es). Se detuvo la "
+                "ejecución para evitar llamadas adicionales."
+            )
+
+        current_cost = estimate_token_cost_usd(model, total_usage)
+
+        if (
+            current_cost is not None
+            and current_cost >= max_estimated_cost_usd
+        ):
+            write_execution_log(
+                model=model,
+                project_id=project_id,
+                selected_files=selected_files,
+                usage=total_usage,
+                usage_calls=usage_calls,
+                estimated_token_cost_usd=current_cost,
+                status="cost_limit_reached",
+                error=(
+                    "Se evitó una continuación porque el costo estimado "
+                    f"alcanzó ${current_cost:.6f} USD."
+                ),
+            )
+
+            raise ClaudeReviewError(
+                "La ejecución solicitó una continuación, pero ya alcanzó "
+                f"el límite estimado de ${max_estimated_cost_usd} USD. "
+                "La llamada adicional fue bloqueada."
+            )
 
         messages.append(
             {
@@ -504,7 +823,13 @@ def run_cloud_review(
 
         container_id = get_container_id(response)
 
-        time.sleep(2)
+        if not container_id:
+            raise ClaudeReviewError(
+                "Claude solicitó una continuación, pero no devolvió un "
+                "container_id válido."
+            )
+
+        continuations += 1
 
         response = create_message(
             client=client,
@@ -523,37 +848,55 @@ def run_cloud_review(
 
     raw_text = extract_text_from_response(response)
 
-    print("DEBUG stop_reason:", getattr(response, "stop_reason", None))
-    print("DEBUG raw_text length:", len(raw_text or ""))
+    if completed_review_json is not None:
+        review_json = completed_review_json
+    else:
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            estimated_cost = estimate_token_cost_usd(model, total_usage)
 
-    if getattr(response, "stop_reason", None) == "max_tokens":
-        print("DEBUG raw_text preview:", repr(raw_text[:1000]))
-        raise ClaudeReviewError(
-            "Claude alcanzó max_tokens antes de devolver el JSON final. "
-            "La ejecución consumió el presupuesto de salida durante el análisis."
-        )
+            write_execution_log(
+                model=model,
+                project_id=project_id,
+                selected_files=selected_files,
+                usage=total_usage,
+                usage_calls=usage_calls,
+                estimated_token_cost_usd=estimated_cost,
+                status="max_tokens_reached",
+                error=(
+                    "Claude alcanzó max_tokens antes de devolver el JSON final."
+                ),
+            )
 
-    try:
-        review_json = parse_json_from_text(raw_text)
-    except Exception:
-        print("DEBUG full raw_text:", repr(raw_text))
-        print("DEBUG response content:", content_blocks_to_dicts(response.content))
-        raise
+            raise ClaudeReviewError(
+                "Claude alcanzó max_tokens antes de devolver el JSON final. "
+                "La ejecución consumió el presupuesto de salida durante el "
+                "análisis."
+            )
 
-    print("DEBUG summary:", review_json.get("summary"))
-    print("DEBUG detail_rows count:", len(review_json.get("detail_rows", [])))
-    print("DEBUG first 2 rows:", review_json.get("detail_rows", [])[:2])
-    print("DEBUG errors:", review_json.get("errors", []))
-    print("DEBUG review_json type:", type(review_json))
-    print("DEBUG review_json keys:", list(review_json.keys()) if isinstance(review_json, dict) else "NOT_DICT")
-    print("DEBUG raw_text preview:", raw_text[:2500])
-    print("DEBUG review_json full:", review_json)
+        try:
+            review_json = parse_json_from_text(raw_text)
+        except ClaudeReviewError as exc:
+            estimated_cost = estimate_token_cost_usd(model, total_usage)
+
+            write_execution_log(
+                model=model,
+                project_id=project_id,
+                selected_files=selected_files,
+                usage=total_usage,
+                usage_calls=usage_calls,
+                estimated_token_cost_usd=estimated_cost,
+                status="invalid_json",
+                error=str(exc),
+            )
+
+            raise
+
     estimated_token_cost_usd = estimate_token_cost_usd(model, total_usage)
 
     write_execution_log(
         model=model,
         project_id=project_id,
-        selected_files=[item["filename"] for item in uploaded_json_files],
+        selected_files=selected_files,
         usage=total_usage,
         usage_calls=usage_calls,
         estimated_token_cost_usd=estimated_token_cost_usd,

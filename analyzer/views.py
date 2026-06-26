@@ -8,6 +8,7 @@ import tempfile
 import time
 import uuid
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 
@@ -18,7 +19,10 @@ from .forms import UploadSolutionZipForm
 from .services.claude_review import ClaudeReviewError, run_cloud_review
 from .services.excel_export import export_review_to_xlsx
 from .services.flow_inventory import collect_flow_metrics
-from .services.review_normalizer import normalize_review_payload
+from .services.review_normalizer import (
+    merge_normalized_reviews,
+    normalize_review_payload,
+)
 from .services.zip_reader import extract_zip, find_json_files, save_upload
 
 
@@ -253,6 +257,80 @@ def _calculate_action_health(
     }
 
 
+
+def _read_analysis_budget_usd() -> Decimal | None:
+    """
+    Presupuesto acumulado para todos los JSON seleccionados.
+
+    El límite se comprueba entre archivos. No puede detener una llamada de
+    Claude que ya comenzó, por lo que el último archivo procesado podría hacer
+    que el total rebase ligeramente el presupuesto.
+    """
+    raw_value = (
+        os.getenv("ANTHROPIC_MAX_ESTIMATED_COST_USD", "1.50") or ""
+    ).strip()
+
+    if not raw_value:
+        return None
+
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation:
+        return Decimal("1.50")
+
+    return value if value > 0 else None
+
+
+def _merge_usage_totals(
+    total_usage: dict,
+    current_usage: dict,
+) -> None:
+    token_fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )
+
+    for field in token_fields:
+        total_usage[field] = int(total_usage.get(field, 0) or 0) + int(
+            current_usage.get(field, 0) or 0
+        )
+
+    current_tools = current_usage.get("server_tool_use") or {}
+    total_tools = total_usage.setdefault("server_tool_use", {})
+
+    if isinstance(current_tools, dict):
+        for key, value in current_tools.items():
+            if isinstance(value, int):
+                total_tools[key] = int(total_tools.get(key, 0) or 0) + value
+
+
+def _total_tokens_from_usage(usage: dict) -> int:
+    return sum(
+        int(usage.get(field, 0) or 0)
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
+
+
+def _append_usage_calls(
+    aggregate_calls: list[dict],
+    current_calls: list[dict],
+    *,
+    source_file: str,
+) -> None:
+    for current_call in current_calls:
+        normalized_call = dict(current_call)
+        normalized_call["call_index"] = len(aggregate_calls) + 1
+        normalized_call["source_file"] = source_file
+        aggregate_calls.append(normalized_call)
+
+
 def upload_view(request):
     if request.method == "POST":
         form = UploadSolutionZipForm(request.POST, request.FILES)
@@ -331,6 +409,7 @@ def upload_view(request):
     return render(request, "analyzer/upload.html", {"form": form})
 
 
+
 def select_jsons_view(request, pick_id: str):
     data = request.session.get(f"pick:{pick_id}")
 
@@ -338,7 +417,10 @@ def select_jsons_view(request, pick_id: str):
         return redirect("upload")
 
     candidates = data.get("candidates", [])
-    project_id = (request.POST.get("project_id") or data.get("project_id", "")).strip()
+    project_id = (
+        request.POST.get("project_id")
+        or data.get("project_id", "")
+    ).strip()
 
     data["project_id"] = project_id
     request.session[f"pick:{pick_id}"] = data
@@ -349,7 +431,9 @@ def select_jsons_view(request, pick_id: str):
     if request.method != "POST":
         return _render_upload_with_picker(
             request,
-            form=UploadSolutionZipForm(initial={"project_id": project_id}),
+            form=UploadSolutionZipForm(
+                initial={"project_id": project_id}
+            ),
             pick_id=pick_id,
             project_id=project_id,
             candidates=candidates,
@@ -363,7 +447,9 @@ def select_jsons_view(request, pick_id: str):
     if not selected_ids:
         return _render_upload_with_picker(
             request,
-            form=UploadSolutionZipForm(initial={"project_id": project_id}),
+            form=UploadSolutionZipForm(
+                initial={"project_id": project_id}
+            ),
             pick_id=pick_id,
             project_id=project_id,
             candidates=candidates,
@@ -383,56 +469,137 @@ def select_jsons_view(request, pick_id: str):
     if not selected_items:
         return _render_upload_with_picker(
             request,
-            form=UploadSolutionZipForm(initial={"project_id": project_id}),
+            form=UploadSolutionZipForm(
+                initial={"project_id": project_id}
+            ),
             pick_id=pick_id,
             project_id=project_id,
             candidates=candidates,
             selected_ids=[],
-            picker_error="The selected flows are no longer valid. Please upload the ZIP again.",
+            picker_error=(
+                "The selected flows are no longer valid. "
+                "Please upload the ZIP again."
+            ),
             uploaded_file_name=uploaded_file_name,
             uploaded_file_size=uploaded_file_size,
         )
 
-    selected_json_paths = [item["full_path"] for item in selected_items]
-    flow_metrics = collect_flow_metrics(selected_json_paths)
+    # Cada JSON seleccionado se analiza en una petición independiente.
+    normalized_reviews: list[dict] = []
+    processed_json_paths: list[str] = []
+    processed_files: list[str] = []
+    analysis_errors: list[str] = []
 
-    try:
-        claude_result = run_cloud_review(
-            json_files=selected_json_paths,
-            project_id=project_id,
+    aggregate_usage: dict = {}
+    aggregate_usage_calls: list[dict] = []
+    aggregate_cost = Decimal("0")
+    aggregate_continuations = 0
+
+    model_used = ""
+    final_stop_reason = ""
+    analysis_budget = _read_analysis_budget_usd()
+
+    for item_index, item in enumerate(selected_items, start=1):
+        json_path = item["full_path"]
+        json_name = Path(json_path).name
+
+        # El presupuesto puede bloquear archivos futuros, pero no una llamada
+        # que ya comenzó.
+        if (
+            analysis_budget is not None
+            and aggregate_cost >= analysis_budget
+        ):
+            analysis_errors.append(
+                "Análisis parcial: se alcanzó el presupuesto estimado "
+                f"de ${analysis_budget:.2f} USD antes de procesar "
+                f"{json_name}."
+            )
+            break
+
+        try:
+            claude_result = run_cloud_review(
+                json_files=[json_path],
+                project_id=project_id,
+            )
+            normalized_review = normalize_review_payload(
+                claude_result["review_json"]
+            )
+        except ClaudeReviewError as exc:
+            analysis_errors.append(
+                f"{json_name}: Claude review failed: {exc}"
+            )
+            break
+        except Exception as exc:
+            analysis_errors.append(
+                f"{json_name}: unexpected analysis error: {exc}"
+            )
+            break
+
+        normalized_reviews.append(normalized_review)
+        processed_json_paths.append(json_path)
+        processed_files.append(json_name)
+
+        current_usage = claude_result.get("usage") or {}
+        _merge_usage_totals(aggregate_usage, current_usage)
+
+        _append_usage_calls(
+            aggregate_usage_calls,
+            claude_result.get("usage_calls") or [],
+            source_file=json_name,
         )
 
-        normalized = normalize_review_payload(claude_result["review_json"])
+        current_cost = claude_result.get("estimated_token_cost_usd")
+        if current_cost is not None:
+            aggregate_cost += Decimal(str(current_cost))
 
-    except ClaudeReviewError as exc:
-        print("DEBUG ClaudeReviewError:", repr(exc))
+        aggregate_continuations += int(
+            claude_result.get("continuations", 0) or 0
+        )
+
+        model_used = claude_result.get("model") or model_used
+        final_stop_reason = (
+            claude_result.get("stop_reason") or final_stop_reason
+        )
+
+        if (
+            analysis_budget is not None
+            and aggregate_cost >= analysis_budget
+            and item_index < len(selected_items)
+        ):
+            analysis_errors.append(
+                "Análisis parcial: después de procesar "
+                f"{json_name}, el costo estimado acumulado llegó a "
+                f"${aggregate_cost:.6f} USD. No se iniciaron los "
+                "JSON restantes."
+            )
+            break
+
+    if not normalized_reviews:
+        error_message = (
+            analysis_errors[0]
+            if analysis_errors
+            else "No selected JSON could be analyzed."
+        )
+
         return _render_upload_with_picker(
             request,
-            form=UploadSolutionZipForm(initial={"project_id": project_id}),
+            form=UploadSolutionZipForm(
+                initial={"project_id": project_id}
+            ),
             pick_id=pick_id,
             project_id=project_id,
             candidates=candidates,
             selected_ids=selected_ids,
-            picker_error=f"Claude review failed: {exc}",
+            picker_error=error_message,
             uploaded_file_name=uploaded_file_name,
             uploaded_file_size=uploaded_file_size,
         )
 
-    except Exception as exc:
-        import traceback
-        print("DEBUG Unexpected error during analysis:", repr(exc))
-        traceback.print_exc()
-        return _render_upload_with_picker(
-            request,
-            form=UploadSolutionZipForm(initial={"project_id": project_id}),
-            pick_id=pick_id,
-            project_id=project_id,
-            candidates=candidates,
-            selected_ids=selected_ids,
-            picker_error=f"Unexpected error during analysis: {exc}",
-            uploaded_file_name=uploaded_file_name,
-            uploaded_file_size=uploaded_file_size,
-        )
+    normalized = merge_normalized_reviews(
+        normalized_reviews,
+        project_id=project_id,
+    )
+    normalized["errors"].extend(analysis_errors)
 
     findings = normalized["findings"]
     findings_sorted = sorted(
@@ -445,13 +612,17 @@ def select_jsons_view(request, pick_id: str):
         ),
     )
 
+    # Las métricas se calculan solo para los JSON que sí terminaron.
+    flow_metrics = collect_flow_metrics(processed_json_paths)
     total_actions = int(flow_metrics.get("total_actions", 0) or 0)
+
     health = _calculate_action_health(
         total_actions=total_actions,
         findings=findings_sorted,
     )
 
     run_id = str(uuid.uuid4())
+    analysis_complete = len(processed_files) == len(selected_items)
 
     request.session[f"run:{run_id}"] = {
         "project_id": project_id,
@@ -461,20 +632,25 @@ def select_jsons_view(request, pick_id: str):
         "errors": normalized.get("errors", []),
         "schema_version": normalized.get("schema_version", ""),
 
-        "total_json": len(selected_items),
+        "total_json": len(processed_files),
+        "selected_json_count": len(selected_items),
+        "processed_json_count": len(processed_files),
+        "processed_files": processed_files,
+        "analysis_complete": analysis_complete,
+
         "total_flows": int(flow_metrics.get("total_flows", 0) or 0),
         "total_actions": total_actions,
         "flagged_actions_count": health["flagged_actions_count"],
         "passed_actions_count": health["passed_actions_count"],
         "passed_actions_pct": health["passed_actions_pct"],
 
-        "model_used": claude_result.get("model", ""),
-        "usage": claude_result.get("usage", {}),
-        "usage_calls": claude_result.get("usage_calls", []),
-        "tokens_used": claude_result.get("tokens_used", 0),
-        "estimated_token_cost_usd": claude_result.get("estimated_token_cost_usd"),
-        "stop_reason": claude_result.get("stop_reason", ""),
-        "continuations": claude_result.get("continuations", 0),
+        "model_used": model_used,
+        "usage": aggregate_usage,
+        "usage_calls": aggregate_usage_calls,
+        "tokens_used": _total_tokens_from_usage(aggregate_usage),
+        "estimated_token_cost_usd": float(aggregate_cost),
+        "stop_reason": final_stop_reason,
+        "continuations": aggregate_continuations,
     }
 
     pick_dir = data.get("pick_dir")

@@ -235,3 +235,169 @@ def normalize_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "detail_columns": detail_columns,
         "detail_rows": detail_rows,
     }
+
+
+def _finding_dedup_key(finding: dict[str, Any]) -> str:
+    """
+    La Skill define la deduplicación por:
+    Flow + Rule ID + Internal Path + Target.
+    """
+    flow_name = _safe_str(finding.get("flow_name")).casefold()
+    rule_id = _safe_str(finding.get("rule_id")).casefold()
+    internal_path = _safe_str(finding.get("internal_path")).casefold()
+    target = _safe_str(finding.get("target")).casefold()
+
+    return "||".join(
+        [
+            flow_name,
+            rule_id,
+            internal_path,
+            target,
+        ]
+    )
+
+
+def merge_normalized_reviews(
+    normalized_reviews: list[dict[str, Any]],
+    *,
+    project_id: str = "",
+) -> dict[str, Any]:
+    """
+    Combina los resultados de varios JSON analizados por separado.
+
+    También vuelve a deduplicar los hallazgos porque cada petición de Claude
+    desconoce las incidencias obtenidas en las peticiones anteriores.
+    """
+    combined_errors: list[Any] = []
+    combined_detail_rows: list[Any] = []
+    combined_findings: dict[str, dict[str, Any]] = {}
+
+    schema_version = "pauto_cloud_rows_v3"
+    platform = "Power Automate Cloud"
+    active_rules = 0
+    flow_names: set[str] = set()
+
+    for review in normalized_reviews:
+        if not isinstance(review, dict):
+            continue
+
+        current_schema = _safe_str(review.get("schema_version"))
+        if current_schema:
+            schema_version = current_schema
+
+        current_scope = review.get("review_scope")
+        if isinstance(current_scope, dict):
+            current_platform = _safe_str(current_scope.get("platform"))
+            if current_platform:
+                platform = current_platform
+
+            try:
+                active_rules = max(
+                    active_rules,
+                    int(current_scope.get("active_rules", 0) or 0),
+                )
+            except (TypeError, ValueError):
+                pass
+
+        current_errors = review.get("errors")
+        if isinstance(current_errors, list):
+            combined_errors.extend(current_errors)
+
+        current_rows = review.get("detail_rows")
+        if isinstance(current_rows, list):
+            combined_detail_rows.extend(current_rows)
+
+        current_findings = review.get("findings")
+        if not isinstance(current_findings, list):
+            continue
+
+        for finding in current_findings:
+            if not isinstance(finding, dict):
+                continue
+
+            flow_name = _safe_str(finding.get("flow_name"))
+            if flow_name:
+                flow_names.add(flow_name)
+
+            dedup_key = _finding_dedup_key(finding)
+            repeat_count = max(
+                1,
+                int(finding.get("repeat_count", 1) or 1),
+            )
+
+            if dedup_key not in combined_findings:
+                stored_finding = dict(finding)
+                stored_finding["group_key"] = dedup_key
+                stored_finding["target_key"] = dedup_key
+                stored_finding["repeat_count"] = repeat_count
+                combined_findings[dedup_key] = stored_finding
+                continue
+
+            combined_findings[dedup_key]["repeat_count"] = (
+                int(
+                    combined_findings[dedup_key].get(
+                        "repeat_count",
+                        1,
+                    )
+                    or 1
+                )
+                + repeat_count
+            )
+
+    findings = list(combined_findings.values())
+
+    level_1 = sum(
+        1
+        for finding in findings
+        if int(finding.get("severity_level", 0) or 0) == 1
+    )
+    level_2 = sum(
+        1
+        for finding in findings
+        if int(finding.get("severity_level", 0) or 0) == 2
+    )
+    level_3 = sum(
+        1
+        for finding in findings
+        if int(finding.get("severity_level", 0) or 0) == 3
+    )
+
+    manual_review_yes = sum(
+        1
+        for finding in findings
+        if _safe_str(
+            finding.get("manual_review_required")
+        ).casefold()
+        == "yes"
+    )
+    manual_review_no = sum(
+        1
+        for finding in findings
+        if _safe_str(
+            finding.get("manual_review_required")
+        ).casefold()
+        == "no"
+    )
+
+    return {
+        "schema_version": schema_version,
+        "project_id": _safe_str(project_id),
+        "review_scope": {
+            "platform": platform,
+            "active_rules": active_rules,
+            "flows_reviewed": len(flow_names),
+        },
+        "summary": {
+            "total_findings": len(findings),
+            "level_3_findings": level_3,
+            "level_2_findings": level_2,
+            "level_1_findings": level_1,
+            "manual_review_yes": manual_review_yes,
+            "manual_review_no": manual_review_no,
+        },
+        "errors": combined_errors,
+        "findings": findings,
+        "detail_columns": EXPECTED_DETAIL_COLUMNS,
+        "detail_rows": combined_detail_rows,
+    }
+
