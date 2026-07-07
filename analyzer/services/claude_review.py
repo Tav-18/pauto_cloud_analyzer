@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-import re
 
 from anthropic import Anthropic
 from django.conf import settings
@@ -40,7 +40,6 @@ VALID_EXECUTION_LOG_MODES = {
     "errors",
     "all",
 }
-
 
 
 MODEL_PRICING_USD_PER_MTOK: dict[str, dict[str, Decimal]] = {
@@ -90,7 +89,6 @@ def get_int_env(name: str, default: int) -> int:
         ) from exc
 
 
-
 def get_float_env(name: str, default: float) -> float:
     raw_value = (os.getenv(name) or "").strip()
 
@@ -131,7 +129,6 @@ def get_decimal_env(name: str, default: Decimal) -> Decimal:
     return value
 
 
-
 def get_execution_log_mode() -> str:
     mode = (
         os.getenv("ANTHROPIC_EXECUTION_LOG_MODE")
@@ -150,7 +147,6 @@ def get_execution_log_mode() -> str:
         )
 
     return mode
-
 
 
 def usage_to_dict(response: Any) -> dict[str, Any]:
@@ -383,6 +379,7 @@ def create_message(
     client: Anthropic,
     model: str,
     skill_id: str,
+    skill_version: str,
     max_tokens: int,
     messages: list[dict[str, Any]],
     container_id: str | None = None,
@@ -392,7 +389,7 @@ def create_message(
             {
                 "type": "custom",
                 "skill_id": skill_id,
-                "version": "latest",
+                "version": skill_version,
             },
         ]
     }
@@ -403,12 +400,12 @@ def create_message(
     return client.beta.messages.create(
         model=model,
         max_tokens=max_tokens,
+        temperature=0,
         betas=BETAS,
         container=container,
         messages=messages,
         tools=[CODE_EXECUTION_TOOL],
-    )
-
+)
 
 def extract_text_from_response(response: Any) -> str:
     parts: list[str] = []
@@ -510,6 +507,7 @@ def parse_json_from_text(text: str) -> dict[str, Any]:
         "objeto JSON válido. No se realizó otro intento para evitar "
         "un cobro adicional."
     )
+
 
 def extract_complete_review_json(response: Any) -> dict[str, Any] | None:
     raw_text = extract_text_from_response(response)
@@ -664,6 +662,7 @@ def write_execution_log(
         # todo el análisis de Claude.
         return
 
+
 def run_cloud_review(
     *,
     json_files: list[str],
@@ -677,6 +676,10 @@ def run_cloud_review(
     api_key = get_required_env("ANTHROPIC_API_KEY")
     model = get_required_env("ANTHROPIC_MODEL")
     skill_id = get_required_env("ANTHROPIC_SKILL_ID")
+    
+    skill_version = get_required_env(
+    "ANTHROPIC_SKILL_VERSION"
+)
 
     max_tokens = get_int_env(
         "ANTHROPIC_MAX_TOKENS",
@@ -746,6 +749,7 @@ def run_cloud_review(
         client=client,
         model=model,
         skill_id=skill_id,
+        skill_version=skill_version,
         max_tokens=max_tokens,
         messages=messages,
     )
@@ -835,6 +839,7 @@ def run_cloud_review(
             client=client,
             model=model,
             skill_id=skill_id,
+            skill_version=skill_version,
             max_tokens=max_tokens,
             messages=messages,
             container_id=container_id,
@@ -908,6 +913,7 @@ def run_cloud_review(
         "raw_text": raw_text,
         "model": model,
         "skill_id": skill_id,
+        "skill_version": skill_version,
         "usage": total_usage,
         "usage_calls": usage_calls,
         "tokens_used": total_tokens_used(total_usage),

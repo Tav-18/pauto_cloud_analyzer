@@ -18,6 +18,50 @@ const cleanUploadUrl = uploadForm ? uploadForm.dataset.uploadUrl : "/";
 const fileError = document.getElementById("fileError");
 const projectError = document.getElementById("projectError");
 const flowSummaryCard = document.getElementById("flowSummaryCard");
+const platformInputs = Array.from(
+  document.querySelectorAll('input[name="platform"]')
+);
+
+const platformCards = Array.from(
+  document.querySelectorAll("[data-platform-card]")
+);
+
+const cloudSourceSection = document.getElementById(
+  "cloudSourceSection"
+);
+
+const desktopSourceSection = document.getElementById(
+  "desktopSourceSection"
+);
+const desktopInput = document.getElementById("id_desktop_files");
+const desktopUploader = document.getElementById("desktopUploader");
+const desktopFileUi = document.getElementById("desktopFileUi");
+const desktopOrbBtn = document.getElementById("desktopOrbBtn");
+const desktopFilePill = document.getElementById("desktopFilePill");
+const desktopFileName = document.getElementById("desktopFileName");
+const desktopFileSize = document.getElementById("desktopFileSize");
+const desktopFileHint = document.getElementById("desktopFileHint");
+const desktopFileError = document.getElementById("desktopFileError");
+const desktopClearBtn = document.getElementById("desktopClearBtn");
+const platformHeaderSubtitle = document.getElementById(
+  "platformHeaderSubtitle"
+);
+const analyzeBtnText = document.getElementById("analyzeBtnText");
+const selectedDesktopFilesContainer = document.getElementById(
+  "selectedDesktopFilesContainer"
+);
+const selectedDesktopSummary = document.getElementById(
+  "selectedDesktopSummary"
+);
+const applyDesktopSelectionBtn = document.getElementById(
+  "applyDesktopSelectionBtn"
+);
+const desktopPickerError = document.getElementById("desktopPickerError");
+const desktopSelectAllBtn = document.getElementById("desktopSelectAllBtn");
+const desktopClearAllBtn = document.getElementById("desktopClearAllBtn");
+const desktopCheckboxes = Array.from(
+  document.querySelectorAll(".desktop-checkbox")
+);
 
   const selectedJsonsContainer = document.getElementById("selectedJsonsContainer");
   const selectedFlowsSummary = document.getElementById("selectedFlowsSummary");
@@ -401,8 +445,16 @@ document.addEventListener("keydown", function (event) {
 if (!isUploadPage) {
   return;
 }
-  const hasPickerState = !!selectedJsonsContainer;
-  const hasPersistentUpload = !!(filePill && filePill.dataset.persistent === "true");
+  const hasCloudPickerState = !!selectedJsonsContainer;
+  const hasDesktopPickerState = !!selectedDesktopFilesContainer;
+  const hasPickerState = hasCloudPickerState || hasDesktopPickerState;
+  const hasPersistentUpload = !!(
+    filePill && filePill.dataset.persistent === "true"
+  );
+  const hasPersistentDesktopUpload = !!(
+    desktopFilePill
+    && desktopFilePill.dataset.persistent === "true"
+  );
 
   function fmtBytes(bytes) {
     if (bytes === null || bytes === undefined || Number.isNaN(bytes)) return "";
@@ -422,6 +474,51 @@ if (!isUploadPage) {
   function validateZip(file) {
     return !!file && typeof file.name === "string" && file.name.toLowerCase().endsWith(".zip");
   }
+  function getSelectedPlatform() {
+  const selected = platformInputs.find(
+    (input) => input.checked
+  );
+
+  return selected ? selected.value : "";
+}
+
+
+function isCloudPlatform() {
+  return getSelectedPlatform() === "cloud";
+}
+
+
+function syncPlatformUI() {
+  const platform = getSelectedPlatform();
+  const isCloud = platform === "cloud";
+
+  platformCards.forEach(function (card) {
+    card.classList.toggle(
+      "is-selected",
+      card.dataset.platformCard === platform
+    );
+  });
+
+  if (cloudSourceSection) {
+    cloudSourceSection.hidden = !isCloud;
+  }
+
+  if (desktopSourceSection) {
+    desktopSourceSection.hidden = isCloud;
+  }
+
+  if (platformHeaderSubtitle) {
+    platformHeaderSubtitle.textContent = isCloud
+      ? "Power Automate Cloud"
+      : "Power Automate Desktop";
+  }
+
+  if (analyzeBtnText) {
+    analyzeBtnText.textContent = isCloud
+      ? "Analyze Selected Flows"
+      : "Analyze Selected Subflows";
+  }
+}
 
   function hasProjectId() {
     return !!projectInput && projectInput.value.trim().length > 0;
@@ -431,9 +528,46 @@ if (!isUploadPage) {
     return input.files && input.files.length ? input.files[0] : null;
   }
 
+  function getSelectedDesktopFiles() {
+    if (!desktopInput || !desktopInput.files) return [];
+    return Array.from(desktopInput.files);
+  }
+
+  function validateDesktopSource(files) {
+    if (!files.length) return false;
+
+    const names = files.map(function (file) {
+      return typeof file.name === "string"
+        ? file.name.toLowerCase()
+        : "";
+    });
+
+    const allTxt = names.every(function (name) {
+      return name.endsWith(".txt");
+    });
+
+    const oneZip = (
+      names.length === 1
+      && names[0].endsWith(".zip")
+    );
+
+    return allTxt || oneZip;
+  }
+
+  function getDesktopFilesSize(files) {
+    return files.reduce(function (total, file) {
+      return total + Number(file.size || 0);
+    }, 0);
+  }
+
   function getSelectedFlowCount() {
-    if (!hasPickerState) return 0;
+    if (!hasCloudPickerState) return 0;
     return checkboxes.filter((cb) => cb.checked).length;
+  }
+
+  function getSelectedDesktopCount() {
+    if (!hasDesktopPickerState) return 0;
+    return desktopCheckboxes.filter((cb) => cb.checked).length;
   }
 
   function showFileError(show, message) {
@@ -444,6 +578,16 @@ if (!isUploadPage) {
     }
 
     fileError.hidden = !show;
+  }
+
+  function showDesktopFileError(show, message) {
+    if (!desktopFileError) return;
+
+    if (message) {
+      desktopFileError.textContent = message;
+    }
+
+    desktopFileError.hidden = !show;
   }
 
   function showProjectError(show, message) {
@@ -466,6 +610,16 @@ if (!isUploadPage) {
     pickerError.hidden = !show;
   }
 
+  function showDesktopPickerError(show, message) {
+    if (!desktopPickerError) return;
+
+    if (message) {
+      desktopPickerError.textContent = message;
+    }
+
+    desktopPickerError.hidden = !show;
+  }
+
   function clearDisplayedFileInfo(force = false) {
     if (hasPersistentUpload && !force) {
       if (filePill) filePill.hidden = false;
@@ -482,21 +636,33 @@ if (!isUploadPage) {
     }
   }
 
-  function syncAnalyzeState() {
-    let canAnalyze = false;
+function syncAnalyzeState() {
+  let canAnalyze = false;
 
-    if (hasPickerState) {
-      canAnalyze = hasProjectId() && getSelectedFlowCount() > 0;
+  if (isCloudPlatform()) {
+    if (hasCloudPickerState) {
+      canAnalyze = (
+        hasProjectId()
+        && getSelectedFlowCount() > 0
+      );
     } else {
-      const file = getSelectedFile();
-      canAnalyze = validateZip(file);
+      canAnalyze = validateZip(getSelectedFile());
     }
-
-    if (analyzeBtn) {
-      analyzeBtn.disabled = !canAnalyze;
-    }
+  } else if (hasDesktopPickerState) {
+    canAnalyze = (
+      hasProjectId()
+      && getSelectedDesktopCount() > 0
+    );
+  } else {
+    canAnalyze = validateDesktopSource(
+      getSelectedDesktopFiles()
+    );
   }
 
+  if (analyzeBtn) {
+    analyzeBtn.disabled = !canAnalyze;
+  }
+}
   function resetFileUI(force = false) {
     clearDisplayedFileInfo(force);
     showFileError(false);
@@ -523,8 +689,82 @@ if (!isUploadPage) {
     syncAnalyzeState();
   }
 
+  function clearDesktopFileInfo(force = false) {
+    if (hasPersistentDesktopUpload && !force) {
+      if (desktopFilePill) desktopFilePill.hidden = false;
+      if (desktopFileHint) {
+        desktopFileHint.textContent = "Your Desktop source is ready";
+      }
+      return;
+    }
+
+    if (desktopFileName) desktopFileName.textContent = "—";
+    if (desktopFileSize) desktopFileSize.textContent = "—";
+    if (desktopFilePill) desktopFilePill.hidden = true;
+
+    if (desktopFileHint) {
+      desktopFileHint.textContent = (
+        "Drag your .txt subflow files or one .zip project here"
+      );
+    }
+  }
+
+  function resetDesktopFileUI(force = false) {
+    clearDesktopFileInfo(force);
+    showDesktopFileError(false);
+    syncAnalyzeState();
+  }
+
+  function setDesktopFileUI(files) {
+    if (!validateDesktopSource(files)) {
+      clearDesktopFileInfo(true);
+      showDesktopFileError(
+        true,
+        "Select multiple .txt files or exactly one .zip project. "
+        + "TXT and ZIP files cannot be mixed."
+      );
+      syncAnalyzeState();
+      return;
+    }
+
+    const count = files.length;
+    const isZip = (
+      count === 1
+      && files[0].name.toLowerCase().endsWith(".zip")
+    );
+
+    let label = files[0].name;
+    let hint = isZip
+      ? "Your PAD ZIP project is ready"
+      : "Your subflow file is ready";
+
+    if (!isZip && count > 1) {
+      label = `${count} PAD TXT files selected`;
+      hint = `${count} subflow files are ready`;
+    }
+
+    if (desktopFileName) desktopFileName.textContent = label;
+    if (desktopFileSize) {
+      desktopFileSize.textContent = fmtBytes(
+        getDesktopFilesSize(files)
+      );
+    }
+    if (desktopFilePill) desktopFilePill.hidden = false;
+
+    if (desktopFileHint) {
+      desktopFileHint.textContent = hint;
+    }
+
+    showDesktopFileError(false);
+    syncAnalyzeState();
+  }
+
   function openPicker() {
     input.click();
+  }
+
+  function openDesktopPicker() {
+    if (desktopInput) desktopInput.click();
   }
 
   function handleInvalidZip() {
@@ -539,14 +779,27 @@ if (!isUploadPage) {
     syncAnalyzeState();
   }
 
-  function discoverFlowsImmediately() {
+function discoverFlowsImmediately() {
     if (hasPickerState) return;
+    if (!isCloudPlatform()) return;
 
     const file = getSelectedFile();
     if (!validateZip(file)) return;
 
     // Descubrimiento automático de flujos.
     // No valida Project ID en esta fase.
+    uploadForm.submit();
+  }
+
+  function discoverDesktopSubflowsImmediately() {
+    if (hasPickerState) return;
+    if (isCloudPlatform()) return;
+
+    const files = getSelectedDesktopFiles();
+    if (!validateDesktopSource(files)) return;
+
+    // Descubrimiento automático de subflujos PAD.
+    // No llama a Claude en esta fase.
     uploadForm.submit();
   }
 
@@ -580,6 +833,36 @@ if (!isUploadPage) {
       });
   }
 
+  function updateSelectedDesktopCount() {
+    const total = getSelectedDesktopCount();
+
+    if (selectedDesktopSummary) {
+      selectedDesktopSummary.textContent = String(total);
+    }
+
+    if (total > 0) {
+      showDesktopPickerError(false);
+    }
+
+    syncAnalyzeState();
+  }
+
+  function syncHiddenSelectedDesktopInputs() {
+    if (!selectedDesktopFilesContainer) return;
+
+    selectedDesktopFilesContainer.innerHTML = "";
+
+    desktopCheckboxes
+      .filter((checkbox) => checkbox.checked)
+      .forEach((checkbox) => {
+        const hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "selected_desktop_files";
+        hidden.value = checkbox.value;
+        selectedDesktopFilesContainer.appendChild(hidden);
+      });
+  }
+
   function showAnalyzeOverlay(message) {
     if (overlay) {
       overlay.classList.add("show");
@@ -603,6 +886,77 @@ if (!isUploadPage) {
         window.clearInterval(timer);
       }, 6000);
     }
+  }
+
+platformInputs.forEach(function (platformInput) {
+  platformInput.addEventListener("change", function () {
+    if (hasPickerState) {
+      window.location.href = cleanUploadUrl;
+      return;
+    }
+
+    if (isCloudPlatform()) {
+      if (desktopInput) desktopInput.value = "";
+      resetDesktopFileUI(true);
+    } else {
+      input.value = "";
+      resetFileUI(true);
+    }
+
+    syncPlatformUI();
+    syncAnalyzeState();
+  });
+});
+  
+  if (desktopFileUi) {
+    desktopFileUi.addEventListener("click", function (event) {
+      event.preventDefault();
+      openDesktopPicker();
+    });
+  }
+
+  if (desktopOrbBtn) {
+    desktopOrbBtn.addEventListener("click", function (event) {
+      event.preventDefault();
+      openDesktopPicker();
+    });
+  }
+
+  if (desktopInput) {
+    desktopInput.addEventListener("change", function () {
+      const files = getSelectedDesktopFiles();
+
+      if (!files.length) {
+        resetDesktopFileUI();
+        return;
+      }
+
+      setDesktopFileUI(files);
+
+      if (!hasPickerState) {
+        window.setTimeout(function () {
+          discoverDesktopSubflowsImmediately();
+        }, 120);
+      }
+    });
+  }
+
+  if (desktopClearBtn) {
+    desktopClearBtn.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (desktopFilePill) {
+        desktopFilePill.removeAttribute("data-persistent");
+      }
+
+      if (desktopInput) desktopInput.value = "";
+      resetDesktopFileUI(true);
+
+      if (hasDesktopPickerState) {
+        window.location.href = cleanUploadUrl;
+      }
+    });
   }
 
   if (fileUi) {
@@ -672,7 +1026,7 @@ if (clearBtn) {
       analyzeBtn.disabled = true;
     }
 
-    if (hasPickerState) {
+    if (hasCloudPickerState) {
       window.location.href = cleanUploadUrl;
       return;
     }
@@ -693,6 +1047,58 @@ if (clearBtn) {
     projectInput.addEventListener("blur", function () {
       if (hasPickerState && !hasProjectId()) {
         showProjectError(true, "Please enter a Project ID before continuing.");
+      }
+    });
+  }
+
+  if (desktopUploader) {
+    ["dragenter", "dragover"].forEach(function (evt) {
+      desktopUploader.addEventListener(evt, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        desktopUploader.classList.add("is-dragover");
+      });
+    });
+
+    ["dragleave", "drop"].forEach(function (evt) {
+      desktopUploader.addEventListener(evt, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        desktopUploader.classList.remove("is-dragover");
+      });
+    });
+
+    desktopUploader.addEventListener("drop", function (event) {
+      const dataTransfer = event.dataTransfer;
+
+      if (
+        !dataTransfer
+        || !dataTransfer.files
+        || dataTransfer.files.length === 0
+      ) {
+        return;
+      }
+
+      const files = Array.from(dataTransfer.files);
+
+      if (!validateDesktopSource(files)) {
+        if (desktopInput) desktopInput.value = "";
+        setDesktopFileUI(files);
+        return;
+      }
+
+      try {
+        if (desktopInput) desktopInput.files = dataTransfer.files;
+      } catch (error) {
+        // Some browsers protect FileList assignment. UI still reflects the drop.
+      }
+
+      setDesktopFileUI(files);
+
+      if (!hasPickerState) {
+        window.setTimeout(function () {
+          discoverDesktopSubflowsImmediately();
+        }, 120);
       }
     });
   }
@@ -781,51 +1187,150 @@ if (clearBtn) {
     });
   }
 
-  uploadForm.addEventListener("submit", function (event) {
-    // Si todavía no existe el estado del picker, este submit es el de descubrimiento automático
-    // o el submit manual para cargar el ZIP.
-    if (!hasPickerState) {
-      const file = getSelectedFile();
+  if (desktopSelectAllBtn) {
+    desktopSelectAllBtn.addEventListener("click", function () {
+      desktopCheckboxes.forEach((checkbox) => {
+        checkbox.checked = true;
+      });
+      updateSelectedDesktopCount();
+    });
+  }
 
-      if (!validateZip(file)) {
+  if (desktopClearAllBtn) {
+    desktopClearAllBtn.addEventListener("click", function () {
+      desktopCheckboxes.forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+      updateSelectedDesktopCount();
+    });
+  }
+
+  desktopCheckboxes.forEach((checkbox) => {
+    checkbox.addEventListener("change", updateSelectedDesktopCount);
+  });
+
+  if (applyDesktopSelectionBtn) {
+    applyDesktopSelectionBtn.addEventListener("click", function () {
+      const total = getSelectedDesktopCount();
+
+      if (total === 0) {
+        showDesktopPickerError(true, "Select at least one subflow.");
+        return;
+      }
+
+      syncHiddenSelectedDesktopInputs();
+      updateSelectedDesktopCount();
+
+      document.querySelectorAll(".info-modal.is-open").forEach(function (modal) {
+        closeModal(modal);
+      });
+    });
+  }
+
+  uploadForm.addEventListener("submit", function (event) {
+    // Sin picker, el submit solo descubre la fuente seleccionada.
+    if (!hasPickerState) {
+      if (isCloudPlatform()) {
+        const file = getSelectedFile();
+
+        if (!validateZip(file)) {
+          event.preventDefault();
+          showFileError(true, "Please select a valid .zip file.");
+          syncAnalyzeState();
+          return;
+        }
+
+        showFileError(false);
+        return;
+      }
+
+      const desktopFiles = getSelectedDesktopFiles();
+
+      if (!validateDesktopSource(desktopFiles)) {
         event.preventDefault();
-        showFileError(true, "Please select a valid .zip file.");
+        showDesktopFileError(
+          true,
+          "Select multiple .txt files or exactly one .zip project. "
+          + "TXT and ZIP files cannot be mixed."
+        );
         syncAnalyzeState();
         return;
       }
 
-      showFileError(false);
+      showDesktopFileError(false);
       return;
     }
 
-    // Si ya existen flujos descubiertos, este submit es el análisis final.
     const projectOk = hasProjectId();
-    const selectedCount = getSelectedFlowCount();
 
     if (!projectOk) {
       event.preventDefault();
-      showProjectError(true, "Please enter a Project ID before continuing.");
+      showProjectError(
+        true,
+        "Please enter a Project ID before continuing."
+      );
     } else {
       showProjectError(false);
     }
 
-    if (selectedCount === 0) {
-      event.preventDefault();
-      showPickerError(true, "Select at least one flow.");
-    } else {
-      showPickerError(false);
+    if (isCloudPlatform()) {
+      const selectedCount = getSelectedFlowCount();
+
+      if (selectedCount === 0) {
+        event.preventDefault();
+        showPickerError(true, "Select at least one flow.");
+      } else {
+        showPickerError(false);
+      }
+
+      if (!projectOk || selectedCount === 0) {
+        syncAnalyzeState();
+        return;
+      }
+
+      syncHiddenSelectedInputs();
+      showAnalyzeOverlay(
+        "Analyzing selected flows and preparing the Excel report…"
+      );
+      return;
     }
 
-    if (!projectOk || selectedCount === 0) {
+    const selectedDesktopCount = getSelectedDesktopCount();
+
+    if (selectedDesktopCount === 0) {
+      event.preventDefault();
+      showDesktopPickerError(
+        true,
+        "Select at least one subflow."
+      );
+    } else {
+      showDesktopPickerError(false);
+    }
+
+    if (!projectOk || selectedDesktopCount === 0) {
       syncAnalyzeState();
       return;
     }
 
-    syncHiddenSelectedInputs();
-    showAnalyzeOverlay("Analyzing selected flows and preparing the Excel report…");
+    syncHiddenSelectedDesktopInputs();
+    showAnalyzeOverlay(
+      "Preparing selected Desktop subflows…"
+    );
   });
 
-  if (hasPersistentUpload) {
+  if (hasPersistentDesktopUpload) {
+    if (desktopFilePill) desktopFilePill.hidden = false;
+    if (desktopFileHint) {
+      desktopFileHint.textContent = "Your Desktop source is ready";
+    }
+    showDesktopFileError(false);
+  } else {
+    resetDesktopFileUI();
+  }
+
+  syncPlatformUI();
+
+if (hasPersistentUpload) {
     if (filePill) filePill.hidden = false;
     if (fileHint) fileHint.textContent = "Your file is ready to analyze";
     showFileError(false);
@@ -835,9 +1340,12 @@ if (clearBtn) {
 
   showProjectError(false);
 
-  if (hasPickerState) {
+  if (hasCloudPickerState) {
     syncHiddenSelectedInputs();
     updateSelectedCount();
+  } else if (hasDesktopPickerState) {
+    syncHiddenSelectedDesktopInputs();
+    updateSelectedDesktopCount();
   } else {
     syncAnalyzeState();
   }

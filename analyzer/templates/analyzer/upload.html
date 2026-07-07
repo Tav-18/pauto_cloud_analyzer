@@ -1,14 +1,15 @@
 {% extends "analyzer/base.html" %}
 {% load static %}
-{% block title %}Upload Solution ZIP{% endblock %}
+{% block title %}Analyze Power Automate Project{% endblock %}
 
 {% block content %}
 <section class="card card-upload-main card-upload-clean">
   <div class="upload-header-minimal">
     <div>
-      <h2 class="upload-title">Analyze Solution ZIP</h2>
+      <h2 class="upload-title">Analyze Power Automate Project</h2>
+
       <p class="upload-sub upload-sub--compact">
-        Upload the ZIP file and enter the Project ID.
+        Select the platform and provide the project source.
       </p>
     </div>
   </div>
@@ -20,15 +21,76 @@
   id="uploadForm"
   novalidate
   data-upload-url="{% url 'upload' %}"
-  action="{% if pick_id %}{% url 'select_jsons' pick_id=pick_id %}{% else %}{% url 'upload' %}{% endif %}"
+  action="{% if pick_id and platform == 'desktop' %}{% url 'select_desktop_files' pick_id=pick_id %}{% elif pick_id %}{% url 'select_jsons' pick_id=pick_id %}{% else %}{% url 'upload' %}{% endif %}"
 >
     {% csrf_token %}
 
     <div class="stack-fields stack-fields--clean">
-
       <fieldset class="form-section">
-        <legend class="section-legend">ZIP File</legend>
+  <legend class="section-legend">Platform</legend>
 
+  <div class="platform-grid" id="platformSelector">
+
+    <label
+      class="platform-option {% if platform == 'cloud' %}is-selected{% endif %}"
+      data-platform-card="cloud"
+    >
+      <input
+        type="radio"
+        name="platform"
+        value="cloud"
+        class="platform-radio"
+        {% if platform == "cloud" %}checked{% endif %}
+      >
+
+      <span class="platform-option__type">
+        Cloud
+      </span>
+
+      <strong class="platform-option__title">
+        Power Automate Cloud
+      </strong>
+
+      <span class="platform-option__text">
+        Analyze solution workflow JSON files.
+      </span>
+    </label>
+
+
+    <label
+      class="platform-option {% if platform == 'desktop' %}is-selected{% endif %}"
+      data-platform-card="desktop"
+    >
+      <input
+        type="radio"
+        name="platform"
+        value="desktop"
+        class="platform-radio"
+        {% if platform == "desktop" %}checked{% endif %}
+      >
+
+      <span class="platform-option__type">
+        Desktop
+      </span>
+
+      <strong class="platform-option__title">
+        Power Automate Desktop
+      </strong>
+
+      <span class="platform-option__text">
+        Analyze exported PAD subflow text.
+      </span>
+    </label>
+
+  </div>
+</fieldset>
+
+<fieldset
+  class="form-section"
+  id="cloudSourceSection"
+  {% if platform == "desktop" %}hidden{% endif %}
+>
+  <legend class="section-legend">Solution ZIP</legend>
         <div class="field field--full">
 
           <div class="uploader uploader--clean" id="uploader" aria-describedby="fileError">
@@ -102,7 +164,9 @@
                       <strong id="selectedFlowsSummary">{{ selected_json_count }}</strong>
                     </span>
 
-                    <span class="badge-mini">Power Automate Cloud</span>
+<span class="badge-mini">
+  {{ platform_label|default:"Power Automate Cloud" }}
+</span>
                   </div>
                 </div>
 
@@ -127,6 +191,143 @@
           {% endif %}
 
           <p class="field-error" id="fileError" hidden>Please select a valid .zip file.</p>
+        </div>
+      </fieldset>
+
+      <fieldset
+        class="form-section"
+        id="desktopSourceSection"
+        {% if platform != "desktop" %}hidden{% endif %}
+      >
+        <legend class="section-legend">PAD Project Source</legend>
+
+        <div class="field field--full">
+          <div
+            class="uploader uploader--clean"
+            id="desktopUploader"
+            aria-describedby="desktopFileError"
+          >
+            <input
+              id="id_desktop_files"
+              class="native-file"
+              type="file"
+              name="desktop_files"
+              accept=".txt,.zip,text/plain,application/zip"
+              multiple
+            />
+
+            <button
+              type="button"
+              class="file-ui file-ui--clean"
+              id="desktopFileUi"
+              aria-label="Select PAD project source"
+            >
+              <span class="file-ui__btn">Select files</span>
+              <span class="file-ui__text" id="desktopFileHint">
+                Drag your .txt subflow files or one .zip project here
+              </span>
+            </button>
+
+            <button
+              type="button"
+              class="upload-orb"
+              id="desktopOrbBtn"
+              aria-label="Choose PAD project source"
+            >
+              <span class="cloud"></span>
+              <span class="arrow"></span>
+            </button>
+          </div>
+
+          <div
+            class="file-pill file-pill--with-x"
+            id="desktopFilePill"
+            {% if not desktop_uploaded_file_name %}hidden{% endif %}
+            {% if desktop_uploaded_file_name %}data-persistent="true"{% endif %}
+          >
+            <div class="meta">
+              <div class="name" id="desktopFileName">
+                {{ desktop_uploaded_file_name|default:"—" }}
+              </div>
+              <div class="size" id="desktopFileSize">
+                {% if desktop_uploaded_file_size %}
+                  {{ desktop_uploaded_file_size|filesizeformat }}
+                {% else %}
+                  —
+                {% endif %}
+              </div>
+            </div>
+
+            <span class="badge-mini badge-mini--success">Ready</span>
+
+            <button
+              type="button"
+              class="pill-x"
+              id="desktopClearBtn"
+              aria-label="Remove PAD project source"
+              title="Remove PAD project source"
+            >×</button>
+          </div>
+
+          {% if show_desktop_picker %}
+            <div class="flow-summary-card" id="desktopSummaryCard">
+              <div class="flow-summary-card__row">
+                <div class="flow-summary-card__left">
+                  <div class="flow-summary-card__title">Subflow Analysis</div>
+
+                  <div class="flow-summary-card__badges">
+                    <span class="badge-mini">
+                      Subflows:
+                      <strong>{{ desktop_count }}</strong>
+                    </span>
+
+                    <span class="badge-mini">
+                      Selected:
+                      <strong id="selectedDesktopSummary">
+                        {{ selected_desktop_count }}
+                      </strong>
+                    </span>
+
+                    <span class="badge-mini">
+                      {{ platform_label|default:"Power Automate Desktop" }}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  class="flow-summary-card__action"
+                  data-modal-open="desktopPickerModal"
+                  aria-haspopup="dialog"
+                  aria-controls="desktopPickerModal"
+                >
+                  <span class="flow-summary-card__action-icon" aria-hidden="true">☑</span>
+                  Select subflows
+                </button>
+              </div>
+            </div>
+
+            <div id="selectedDesktopFilesContainer" hidden>
+              {% for selected_id in selected_desktop_ids %}
+                <input
+                  type="hidden"
+                  name="selected_desktop_files"
+                  value="{{ selected_id }}"
+                >
+              {% endfor %}
+            </div>
+          {% endif %}
+
+          {% if desktop_ready_message %}
+            <div class="desktop-pending-note">
+              <strong>Desktop source ready</strong>
+              <span>{{ desktop_ready_message }}</span>
+            </div>
+          {% endif %}
+
+          <p class="field-error" id="desktopFileError" hidden>
+            Select one or more .txt files or one .zip project.
+          </p>
         </div>
       </fieldset>
 
@@ -156,7 +357,7 @@
 
 <div class="submit-bar submit-bar--clean">
   <button class="btn btn-primary btn-analyze" type="submit" id="analyzeBtn">
-    <span>Analyze Selected Flows</span>
+    <span id="analyzeBtnText">Analyze Selected Flows</span>
   </button>
 </div>
   </form>
@@ -253,12 +454,113 @@
   </div>
 {% endif %}
 
+{% if show_desktop_picker %}
+  <div
+    class="info-modal picker-modal"
+    id="desktopPickerModal"
+    hidden
+    aria-hidden="true"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="desktopPickerTitle"
+  >
+    <div class="info-modal__backdrop" data-modal-close></div>
+
+    <div class="info-modal__dialog info-modal__dialog--wide">
+      <div class="info-modal__header">
+        <div>
+          <p class="eyebrow">Subflow Selection</p>
+          <h2 class="section-title" id="desktopPickerTitle">Select Subflows</h2>
+          <p class="section-subtitle">
+            Choose which PAD subflows should be included in the analysis.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          class="info-modal__close"
+          aria-label="Close subflow selection"
+          data-modal-close
+        >
+          ×
+        </button>
+      </div>
+
+      {% if desktop_picker_error %}
+        <div class="alert alert-error" id="desktopPickerError">
+          {{ desktop_picker_error }}
+        </div>
+      {% else %}
+        <div class="alert alert-error" id="desktopPickerError" hidden></div>
+      {% endif %}
+
+      <div class="selection-toolbar selection-toolbar--modal">
+        <div class="action-group">
+          <button type="button" class="btn btn-secondary" id="desktopSelectAllBtn">
+            Select all
+          </button>
+          <button type="button" class="btn btn-secondary" id="desktopClearAllBtn">
+            Clear all
+          </button>
+        </div>
+      </div>
+
+      <div class="summary-table-wrap">
+        <table class="summary-table json-picker-table">
+          <thead>
+            <tr>
+              <th class="checkbox-col">Select</th>
+              <th>Subflow</th>
+              <th>Source File</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in desktop_candidates %}
+              <tr>
+                <td class="checkbox-col">
+                  <input
+                    type="checkbox"
+                    value="{{ item.id }}"
+                    class="desktop-checkbox"
+                    {% if item.id in selected_desktop_ids %}checked{% endif %}
+                  >
+                </td>
+                <td>
+                  <div class="json-flow-name">{{ item.display_name }}</div>
+                </td>
+                <td>
+                  <div class="json-rel-path">{{ item.rel_path }}</div>
+                </td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="3" class="empty-state-cell">
+                  No PAD TXT subflows were found in the uploaded source.
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="info-modal__footer">
+        <button type="button" class="btn btn-secondary" data-modal-close>
+          Cancel
+        </button>
+        <button type="button" class="btn btn-primary" id="applyDesktopSelectionBtn">
+          Apply Selection
+        </button>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
 <div class="beecker-overlay" id="overlay" aria-hidden="true">
   <div class="beecker-overlay-card">
     <div class="beecker-loader-row">
       <div class="beecker-spinner"></div>
       <div>
-        <p class="beecker-loader-title">Analyzing Solution ZIP</p>
+        <p class="beecker-loader-title">Analyzing Power Automate Project</p>
         <p class="beecker-loader-sub" id="overlayMessage">Applying rules and preparing the Excel report…</p>
         <div class="beecker-progress-bar">
           <div class="beecker-progress" id="progress"></div>
